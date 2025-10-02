@@ -1,4 +1,4 @@
-import { autotypeWithSchema } from './typeFunction'
+import { autotype } from './typeFunction'
 import { Schema } from './schema'
 
 function createSchema<const T extends Schema>(schema: T): T {
@@ -21,8 +21,8 @@ function main() {
     },
   })
 
-  const ex1 = autotypeWithSchema('{ users { id posts { title } } }', schema)
-  const ex2 = autotypeWithSchema('{ users { posts { title } } }', schema)
+  const ex1 = autotype('{ users { id posts { title } } }', schema)
+  const ex2 = autotype('{ users { posts { title } } }', schema)
 }
 
 main()

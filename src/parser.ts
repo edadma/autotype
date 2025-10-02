@@ -1,80 +1,124 @@
-export type Field = {
-  name: string
-  isArray: boolean
-  value: 'string' | Field[]
+import type { Schema } from './schema'
+
+// Simple AST structure
+type Field = {
+  readonly name: string
+  readonly value: 'string' | readonly Field[]
 }
 
-export function parse(input: string): Field[] {
-  let pos = 0
+// String utilities
+type Trim<S extends string> = S extends ` ${infer R}` ? Trim<R> : S extends `${infer R} ` ? Trim<R> : S
 
-  function skipWhitespace() {
-    while (pos < input.length && /\s/.test(input[pos])) {
-      pos++
+// Extract identifier
+type Identifier<S extends string> =
+  S extends `${infer Char}${infer Rest}`
+    ? Char extends 'a' | 'b' | 'c' | 'd' | 'e' | 'f' | 'g' | 'h' | 'i' | 'j' | 'k' | 'l' | 'm' | 'n' | 'o' | 'p' | 'q' | 'r' | 's' | 't' | 'u' | 'v' | 'w' | 'x' | 'y' | 'z' | 'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'H' | 'I' | 'J' | 'K' | 'L' | 'M' | 'N' | 'O' | 'P' | 'Q' | 'R' | 'S' | 'T' | 'U' | 'V' | 'W' | 'X' | 'Y' | 'Z' | '_'
+      ? `${Char}${Identifier<Rest>}`
+      : ''
+    : ''
+
+// Parse fields into AST - much simpler without trying to detect arrays
+type ParseFields<S extends string> =
+  Trim<S> extends ''
+    ? []
+    : Trim<S> extends `${infer Name} ${infer Rest}`
+      ? Identifier<Name> extends infer ID extends string
+        ? ID extends ''
+          ? []
+          : Trim<Rest> extends `{${string}`
+            ? // Has nested object - need to find where it ends
+              SkipBraced<Trim<Rest>> extends [infer Nested extends string, infer After extends string]
+              ? Nested extends `{${infer Content}}`
+                ? [{ name: ID; value: ParseFields<Content> }, ...ParseFields<After>]
+                : []
+              : []
+            : // Simple field
+              [{ name: ID; value: 'string' }, ...ParseFields<Rest>]
+        : []
+    : Identifier<Trim<S>> extends infer ID extends string
+      ? ID extends ''
+        ? []
+        : [{ name: ID; value: 'string' }]
+      : []
+
+// Skip over {...} counting depth - returns the full {...} and what comes after
+type SkipBraced<S extends string> = S extends `{${infer Rest}`
+  ? SkipBracedHelper<Rest, [0]> extends [infer Content extends string, infer After extends string]
+    ? [`{${Content}`, After]
+    : never
+  : never
+
+type SkipBracedHelper<S extends string, Stack extends any[]> =
+  S extends `{${infer Rest}`
+    ? SkipBracedHelper<Rest, [0, ...Stack]> extends [infer Content extends string, infer After extends string]
+      ? [`{${Content}`, After]
+      : never
+    : S extends `}${infer Rest}`
+      ? Stack extends [0, ...infer NewStack]
+        ? NewStack extends []
+          ? ['}', Rest]
+          : SkipBracedHelper<Rest, NewStack> extends [infer Content extends string, infer After extends string]
+            ? [`}${Content}`, After]
+            : never
+        : never
+      : S extends `${infer Char}${infer Rest}`
+        ? SkipBracedHelper<Rest, Stack> extends [infer Content extends string, infer After extends string]
+          ? [`${Char}${Content}`, After]
+          : never
+        : never
+
+// Main parser
+export type ParseAST<S extends string> =
+  Trim<S> extends `{${infer Content}}`
+    ? ParseFields<Content>
+    : never
+
+// Convert AST to TypeScript type using schema for array info
+// Deep prettify to flatten all intersections
+type Prettify<T> = T extends infer U
+  ? {
+      [K in keyof U]: U[K] extends object
+        ? U[K] extends any[]
+          ? U[K]
+          : Prettify<U[K]>
+        : U[K]
     }
-  }
+  : never
 
-  function parseIdentifier(): { name: string; isArray: boolean } | null {
-    skipWhitespace()
-    let ident = ''
-    while (pos < input.length && /[a-zA-Z_]/.test(input[pos])) {
-      ident += input[pos]
-      pos++
+type IsArrayInSchema<S extends Schema, FieldName extends string> = FieldName extends keyof S
+  ? S[FieldName] extends { $array: true; $schema: Schema }
+    ? true
+    : false
+  : false
+
+type GetNestedSchema<S extends Schema, FieldName extends string> = FieldName extends keyof S
+  ? S[FieldName] extends { $array: true; $schema: infer Nested extends Schema }
+    ? Nested
+    : {}
+  : {}
+
+// Helper to convert fields - using union of single-property objects, then merge
+type FieldsToType<Fields extends readonly Field[], SchemaObj extends Schema> =
+  UnionToIntersection<FieldToObject<Fields[number], SchemaObj>>
+
+type FieldToObject<F, SchemaObj extends Schema> = F extends { name: infer FieldName extends string; value: infer FieldValue }
+  ? {
+      [K in FieldName]: FieldValue extends 'string'
+        ? IsArrayInSchema<SchemaObj, FieldName> extends true
+          ? string[]
+          : string
+        : FieldValue extends readonly Field[]
+          ? IsArrayInSchema<SchemaObj, FieldName> extends true
+            ? FieldsToType<FieldValue, GetNestedSchema<SchemaObj, FieldName>>[]
+            : FieldsToType<FieldValue, GetNestedSchema<SchemaObj, FieldName>>
+          : never
     }
-    if (!ident) return null
+  : {}
 
-    // Check for array marker []
-    let isArray = false
-    if (input[pos] === '[' && input[pos + 1] === ']') {
-      isArray = true
-      pos += 2 // consume '[]'
-    }
+// Convert union to intersection
+type UnionToIntersection<U> = (U extends any ? (k: U) => void : never) extends (k: infer I) => void ? I : never
 
-    return { name: ident, isArray }
-  }
-
-  function parseObject(): Field[] | null {
-    skipWhitespace()
-    if (input[pos] !== '{') return null
-    pos++ // consume '{'
-
-    const fields: Field[] = []
-
-    while (true) {
-      skipWhitespace()
-      if (input[pos] === '}') {
-        pos++ // consume '}'
-        break
-      }
-
-      const ident = parseIdentifier()
-      if (!ident) {
-        throw new Error(`Expected identifier at position ${pos}`)
-      }
-
-      skipWhitespace()
-      if (input[pos] === '{') {
-        const nested = parseObject()
-        if (!nested) {
-          throw new Error(`Expected object at position ${pos}`)
-        }
-        fields.push({ name: ident.name, isArray: ident.isArray, value: nested })
-      } else {
-        fields.push({ name: ident.name, isArray: ident.isArray, value: 'string' })
-      }
-    }
-
-    return fields
-  }
-
-  const result = parseObject()
-  if (!result) {
-    throw new Error('Expected object')
-  }
-
-  skipWhitespace()
-  if (pos !== input.length) {
-    throw new Error(`Unexpected content at position ${pos}`)
-  }
-
-  return result
-}
+export type ParseWithSchema<S extends string, SchemaObj extends Schema> =
+  ParseAST<S> extends readonly Field[]
+    ? Prettify<FieldsToType<ParseAST<S>, SchemaObj>>
+    : never
