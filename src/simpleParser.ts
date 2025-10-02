@@ -74,9 +74,16 @@ export type ParseAST<S extends string> =
     : never
 
 // Convert AST to TypeScript type using schema for array info
-type Prettify<T> = {
-  [K in keyof T]: T[K] extends infer U ? U : never
-} extends infer O ? { [K in keyof O]: O[K] } : never
+// Deep prettify to flatten all intersections
+type Prettify<T> = T extends infer U
+  ? {
+      [K in keyof U]: U[K] extends object
+        ? U[K] extends any[]
+          ? U[K]
+          : Prettify<U[K]>
+        : U[K]
+    }
+  : never
 
 type IsArrayInSchema<S extends Schema, FieldName extends string> = FieldName extends keyof S
   ? S[FieldName] extends { $array: true; $schema: Schema }
@@ -90,23 +97,26 @@ type GetNestedSchema<S extends Schema, FieldName extends string> = FieldName ext
     : {}
   : {}
 
-// Helper to convert fields one by one
+// Helper to convert fields - using union of single-property objects, then merge
 type FieldsToType<Fields extends readonly Field[], SchemaObj extends Schema> =
-  Fields extends readonly [infer First, ...infer Rest extends readonly Field[]]
-    ? First extends { name: infer FieldName extends string; value: infer FieldValue }
-      ? {
-          [K in FieldName]: FieldValue extends 'string'
-            ? IsArrayInSchema<SchemaObj, FieldName> extends true
-              ? string[]
-              : string
-            : FieldValue extends readonly Field[]
-              ? IsArrayInSchema<SchemaObj, FieldName> extends true
-                ? FieldsToType<FieldValue, GetNestedSchema<SchemaObj, FieldName>>[]
-                : FieldsToType<FieldValue, GetNestedSchema<SchemaObj, FieldName>>
-              : never
-        } & FieldsToType<Rest, SchemaObj>
-      : {}
-    : {}
+  UnionToIntersection<FieldToObject<Fields[number], SchemaObj>>
+
+type FieldToObject<F, SchemaObj extends Schema> = F extends { name: infer FieldName extends string; value: infer FieldValue }
+  ? {
+      [K in FieldName]: FieldValue extends 'string'
+        ? IsArrayInSchema<SchemaObj, FieldName> extends true
+          ? string[]
+          : string
+        : FieldValue extends readonly Field[]
+          ? IsArrayInSchema<SchemaObj, FieldName> extends true
+            ? FieldsToType<FieldValue, GetNestedSchema<SchemaObj, FieldName>>[]
+            : FieldsToType<FieldValue, GetNestedSchema<SchemaObj, FieldName>>
+          : never
+    }
+  : {}
+
+// Convert union to intersection
+type UnionToIntersection<U> = (U extends any ? (k: U) => void : never) extends (k: infer I) => void ? I : never
 
 export type ParseWithSchema<S extends string, SchemaObj extends Schema> =
   ParseAST<S> extends readonly Field[]
